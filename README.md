@@ -56,6 +56,62 @@ overleaf-git-sync init --remote overleaf --branch master
 
 If your local branch is `main`, use `--branch main`. The command writes `.overleaf-git-sync.json` so hooks and agents know this repo is opted in.
 
+## Agent Activation Prompts
+
+After installation, paste one of these prompts into Claude Code or Codex from inside an Overleaf Git project. The agent should still follow the safety workflow: run `sync-before` before reading or editing supported LaTeX files, and use `sync-after` only for files it actually changed.
+
+Set up a project:
+
+```text
+Use overleaf-git-sync: set up this Overleaf Git project for safe AI edits. Detect the Overleaf remote, initialize the marker, and report the configured remote and branch.
+```
+
+Safely edit and push a paper:
+
+```text
+Use overleaf-git-sync: sync this Overleaf Git project before editing, update main.tex, then commit and push only the changed LaTeX files back to Overleaf.
+```
+
+Commit existing local LaTeX edits:
+
+```text
+Use overleaf-git-sync: inspect the current LaTeX changes, then run sync-after with exactly the supported files I changed and push them to Overleaf.
+```
+
+Start near-real-time auto-pull:
+
+```text
+Use overleaf-git-sync: start supervised background auto-pull for this Overleaf project with watch-supervisor at a 5 second interval. Do not use a long-running subagent.
+```
+
+Add automation health checks:
+
+```text
+Use overleaf-git-sync: create a Codex automation that checks this project's supervised watcher every 5 minutes with watch-health --restart-missing --interval 5, and reports attention-needed states.
+```
+
+Check or stop background syncing:
+
+```text
+Use overleaf-git-sync: show the supervised watcher status and recent logs for this project.
+```
+
+```text
+Use overleaf-git-sync: stop the supervised background watcher for this project.
+```
+
+Handle a pending same-file update:
+
+```text
+Use overleaf-git-sync: inspect the watcher status. If it reports a mergeable same-file remote update, run reconcile and report any conflict markers before continuing.
+```
+
+Install or inspect hooks:
+
+```text
+Use overleaf-git-sync: show the hook-config command and explain how the PreToolUse hook protects LaTeX reads and edits.
+```
+
 ## Optional: Poll Like Dropbox
 
 Git does not update your local working tree in the background by itself. If you want a Dropbox-like local auto-pull loop, run:
