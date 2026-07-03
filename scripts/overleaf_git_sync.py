@@ -21,11 +21,18 @@ SUPPORTED_EXTS = (".tex", ".bib", ".cls", ".sty", ".bst")
 MARKER = ".overleaf-git-sync.json"
 DEFAULT_BRANCH = "master"
 DEFAULT_DEBOUNCE_SECONDS = 30
+DEFAULT_LOCK_TIMEOUT_SECONDS = 60.0
+DEFAULT_LOCK_STALE_SECONDS = 30 * 60
+LOCK_DIRNAME = "overleaf-git-sync.lock"
 OVERLEAF_REMOTE_HOST = "git.overleaf.com"
 
 
 class SyncError(RuntimeError):
     """A safety condition failed and the caller should stop."""
+
+
+class LockBusy(SyncError):
+    """Another overleaf-git-sync process owns the repository lock."""
 
 
 class NoProject(RuntimeError):
@@ -53,6 +60,132 @@ def git(repo: pathlib.Path, args: list[str], *, check: bool = True) -> subproces
         detail = (proc.stderr or proc.stdout or "").strip()
         raise SyncError(f"{cmd} failed: {detail}")
     return proc
+
+
+def git_dir(repo: pathlib.Path) -> pathlib.Path:
+    raw = git(repo, ["rev-parse", "--git-dir"]).stdout.strip()
+    path = pathlib.Path(raw)
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve(strict=False)
+
+
+def process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name != "posix":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def lock_owner(path: pathlib.Path) -> dict:
+    info = path / "owner.json"
+    try:
+        payload = json.loads(info.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def lock_owner_summary(path: pathlib.Path) -> str:
+    owner = lock_owner(path)
+    pid = owner.get("pid")
+    reason = owner.get("reason") or "unknown operation"
+    created_at = owner.get("created_at")
+    if isinstance(created_at, (int, float)):
+        age = max(0, int(time.time() - float(created_at)))
+        return f"pid {pid}, {reason}, age {age}s"
+    return f"pid {pid}, {reason}"
+
+
+def remove_stale_lock(path: pathlib.Path) -> bool:
+    owner = lock_owner(path)
+    pid = owner.get("pid")
+    numeric_pid: int | None = None
+    if isinstance(pid, int):
+        numeric_pid = pid
+    elif isinstance(pid, str) and pid.isdigit():
+        numeric_pid = int(pid)
+    if numeric_pid is not None and process_is_running(numeric_pid):
+        return False
+
+    created_at = owner.get("created_at")
+    if isinstance(created_at, (int, float)):
+        stale = (time.time() - float(created_at)) >= DEFAULT_LOCK_STALE_SECONDS
+    else:
+        try:
+            stale = (time.time() - path.stat().st_mtime) >= DEFAULT_LOCK_STALE_SECONDS
+        except OSError:
+            stale = True
+
+    if numeric_pid is not None and not process_is_running(numeric_pid):
+        stale = True
+    if not stale:
+        return False
+    try:
+        shutil.rmtree(path)
+        return True
+    except OSError:
+        return False
+
+
+class RepoLock:
+    def __init__(self, repo: pathlib.Path, reason: str, *, timeout: float) -> None:
+        self.repo = repo
+        self.reason = reason
+        self.timeout = max(0.0, float(timeout))
+        self.path = git_dir(repo) / LOCK_DIRNAME
+        self.token = f"{os.getpid()}-{time.time_ns()}"
+        self.acquired = False
+
+    def __enter__(self) -> "RepoLock":
+        deadline = time.monotonic() + self.timeout
+        pause = 0.2
+        while True:
+            try:
+                self.path.mkdir()
+                payload = {
+                    "pid": os.getpid(),
+                    "token": self.token,
+                    "reason": self.reason,
+                    "repo": str(self.repo),
+                    "created_at": time.time(),
+                }
+                (self.path / "owner.json").write_text(
+                    json.dumps(payload, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                self.acquired = True
+                return self
+            except FileExistsError:
+                if remove_stale_lock(self.path):
+                    continue
+                if time.monotonic() >= deadline:
+                    owner = lock_owner_summary(self.path)
+                    raise LockBusy(
+                        f"another overleaf-git-sync operation is running for {self.repo} "
+                        f"({owner}); waited {self.timeout:g}s"
+                    )
+                time.sleep(min(pause, max(0.0, deadline - time.monotonic())))
+                pause = min(1.0, pause * 1.5)
+            except OSError as exc:
+                if self.path.exists() and not self.acquired:
+                    shutil.rmtree(self.path, ignore_errors=True)
+                raise SyncError(f"could not acquire lock {self.path}: {exc}") from exc
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if not self.acquired:
+            return
+        owner = lock_owner(self.path)
+        if owner.get("token") != self.token:
+            return
+        shutil.rmtree(self.path, ignore_errors=True)
 
 
 def existing_dir_for(path: str | pathlib.Path) -> pathlib.Path:
@@ -260,18 +393,16 @@ def mark_synced(repo: pathlib.Path, remote: str, branch: str) -> None:
     save_state(state)
 
 
-def sync_before(
-    path: str | pathlib.Path,
+def _sync_before_resolved(
+    repo: pathlib.Path,
+    remote: str,
+    branch: str,
+    source: str,
     *,
-    remote_override: str | None = None,
-    branch_override: str | None = None,
     force: bool = False,
     allow_dirty: bool = False,
     debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS,
 ) -> str:
-    repo, remote, branch, source = resolve_project(
-        path, remote_override=remote_override, branch_override=branch_override
-    )
     if not force and is_debounced(repo, remote, branch, debounce_seconds):
         return f"debounced: {repo} ({remote}/{branch})"
 
@@ -294,6 +425,31 @@ def sync_before(
     raise SyncError(
         f"{repo} has diverged from {remote}/{branch}. Resolve with Git before AI edits."
     )
+
+
+def sync_before(
+    path: str | pathlib.Path,
+    *,
+    remote_override: str | None = None,
+    branch_override: str | None = None,
+    force: bool = False,
+    allow_dirty: bool = False,
+    debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+) -> str:
+    repo, remote, branch, source = resolve_project(
+        path, remote_override=remote_override, branch_override=branch_override
+    )
+    with RepoLock(repo, "sync-before", timeout=lock_timeout):
+        return _sync_before_resolved(
+            repo,
+            remote,
+            branch,
+            source,
+            force=force,
+            allow_dirty=allow_dirty,
+            debounce_seconds=debounce_seconds,
+        )
 
 
 def ensure_clean_index(repo: pathlib.Path) -> None:
@@ -349,37 +505,39 @@ def sync_after(
     message: str,
     push: bool = True,
     all_latex: bool = False,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
 ) -> str:
     base_path = paths[0] if paths else "."
     repo, remote, branch, _ = resolve_project(
         base_path, remote_override=remote_override, branch_override=branch_override
     )
-    remote_is_not_ahead(repo, remote, branch)
-    ensure_clean_index(repo)
+    with RepoLock(repo, "sync-after", timeout=lock_timeout):
+        remote_is_not_ahead(repo, remote, branch)
+        ensure_clean_index(repo)
 
-    targets = all_changed_supported_files(repo) if all_latex else changed_supported_files(repo, paths)
-    if not targets:
-        return f"no supported file changes to commit in {repo}"
+        targets = all_changed_supported_files(repo) if all_latex else changed_supported_files(repo, paths)
+        if not targets:
+            return f"no supported file changes to commit in {repo}"
 
-    for rel in targets:
-        git(repo, ["add", "--", rel.as_posix()])
+        for rel in targets:
+            git(repo, ["add", "--", rel.as_posix()])
 
-    staged = [pathlib.Path(p) for p in git(repo, ["diff", "--cached", "--name-only"]).stdout.splitlines()]
-    target_set = {p.as_posix() for p in targets}
-    stray = [p.as_posix() for p in staged if p.as_posix() not in target_set]
-    if stray:
-        git(repo, ["reset", "--mixed", "--", *[p.as_posix() for p in staged]], check=False)
-        raise SyncError("refusing to commit files outside requested target set: " + ", ".join(stray))
+        staged = [pathlib.Path(p) for p in git(repo, ["diff", "--cached", "--name-only"]).stdout.splitlines()]
+        target_set = {p.as_posix() for p in targets}
+        stray = [p.as_posix() for p in staged if p.as_posix() not in target_set]
+        if stray:
+            git(repo, ["reset", "--mixed", "--", *[p.as_posix() for p in staged]], check=False)
+            raise SyncError("refusing to commit files outside requested target set: " + ", ".join(stray))
 
-    if not staged:
-        return f"no staged changes in {repo}"
+        if not staged:
+            return f"no staged changes in {repo}"
 
-    git(repo, ["commit", "-m", message])
-    commit = rev(repo, "HEAD")[:12]
-    if push:
-        git(repo, ["push", remote, f"HEAD:{branch}"])
-        return f"committed {commit} and pushed to {remote}/{branch}: " + ", ".join(target_set)
-    return f"committed {commit} without push: " + ", ".join(target_set)
+        git(repo, ["commit", "-m", message])
+        commit = rev(repo, "HEAD")[:12]
+        if push:
+            git(repo, ["push", remote, f"HEAD:{branch}"])
+            return f"committed {commit} and pushed to {remote}/{branch}: " + ", ".join(target_set)
+        return f"committed {commit} without push: " + ", ".join(target_set)
 
 
 def local_tracked_patch(repo: pathlib.Path) -> bytes:
@@ -486,36 +644,38 @@ def reconcile(
     *,
     remote_override: str | None = None,
     branch_override: str | None = None,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
 ) -> str:
     repo, remote, branch, _ = resolve_project(
         path, remote_override=remote_override, branch_override=branch_override
     )
-    git(repo, ["fetch", "--prune", remote, branch])
-    head = rev(repo, "HEAD")
-    fetched = rev(repo, "FETCH_HEAD")
-    if head == fetched:
-        return f"up to date: {repo} ({remote}/{branch})"
-    if not is_ancestor(repo, head, "FETCH_HEAD"):
-        raise SyncError(f"{repo} has diverged from {remote}/{branch}; resolve committed history first")
+    with RepoLock(repo, "reconcile", timeout=lock_timeout):
+        git(repo, ["fetch", "--prune", remote, branch])
+        head = rev(repo, "HEAD")
+        fetched = rev(repo, "FETCH_HEAD")
+        if head == fetched:
+            return f"up to date: {repo} ({remote}/{branch})"
+        if not is_ancestor(repo, head, "FETCH_HEAD"):
+            raise SyncError(f"{repo} has diverged from {remote}/{branch}; resolve committed history first")
 
-    dirty = bool(dirty_entries(repo))
-    stashed = False
-    if dirty:
-        proc = git(repo, ["stash", "push", "-u", "-m", "overleaf-git-sync reconcile"], check=False)
-        if "No local changes to save" not in (proc.stdout + proc.stderr):
-            if proc.returncode != 0:
-                raise SyncError((proc.stderr or proc.stdout).strip() or "git stash failed")
-            stashed = True
-    git(repo, ["merge", "--ff-only", "FETCH_HEAD"])
-    if not stashed:
-        return f"fast-forwarded: {repo} to {remote}/{branch}"
+        dirty = bool(dirty_entries(repo))
+        stashed = False
+        if dirty:
+            proc = git(repo, ["stash", "push", "-u", "-m", "overleaf-git-sync reconcile"], check=False)
+            if "No local changes to save" not in (proc.stdout + proc.stderr):
+                if proc.returncode != 0:
+                    raise SyncError((proc.stderr or proc.stdout).strip() or "git stash failed")
+                stashed = True
+        git(repo, ["merge", "--ff-only", "FETCH_HEAD"])
+        if not stashed:
+            return f"fast-forwarded: {repo} to {remote}/{branch}"
 
-    pop = git(repo, ["stash", "pop"], check=False)
-    if pop.returncode == 0:
-        return f"reconciled: fast-forwarded {repo} and reapplied local changes cleanly"
-    conflicted = git(repo, ["diff", "--name-only", "--diff-filter=U"], check=False).stdout.splitlines()
-    ranges = conflict_marker_ranges(repo, conflicted)
-    raise SyncError(format_conflict_ranges(ranges) + "; resolve conflict markers, then continue")
+        pop = git(repo, ["stash", "pop"], check=False)
+        if pop.returncode == 0:
+            return f"reconciled: fast-forwarded {repo} and reapplied local changes cleanly"
+        conflicted = git(repo, ["diff", "--name-only", "--diff-filter=U"], check=False).stdout.splitlines()
+        ranges = conflict_marker_ranges(repo, conflicted)
+        raise SyncError(format_conflict_ranges(ranges) + "; resolve conflict markers, then continue")
 
 
 def write_marker(repo: pathlib.Path, remote: str, branch: str) -> None:
@@ -547,7 +707,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     if remote not in remotes:
         raise SyncError(f"remote {remote!r} does not exist")
     branch = args.branch or current_branch(repo) or DEFAULT_BRANCH
-    write_marker(repo, remote, branch)
+    with RepoLock(repo, "init", timeout=args.lock_timeout):
+        write_marker(repo, remote, branch)
     print(f"initialized {repo} -> {remote}/{branch} ({MARKER})")
 
 
@@ -572,11 +733,26 @@ def cmd_status(args: argparse.Namespace) -> None:
         for item in blocking[:12]:
             print(f"  {item}")
     if args.fetch:
-        print(sync_before(args.path, remote_override=remote, branch_override=branch, force=True))
+        print(
+            sync_before(
+                args.path,
+                remote_override=remote,
+                branch_override=branch,
+                force=True,
+                lock_timeout=args.lock_timeout,
+            )
+        )
 
 
 def cmd_reconcile(args: argparse.Namespace) -> None:
-    print(reconcile(args.path, remote_override=args.remote, branch_override=args.branch))
+    print(
+        reconcile(
+            args.path,
+            remote_override=args.remote,
+            branch_override=args.branch,
+            lock_timeout=args.lock_timeout,
+        )
+    )
 
 
 def hook_paths(data: dict) -> list[str]:
@@ -632,7 +808,7 @@ def cmd_hook(args: argparse.Namespace) -> None:
     paths = hook_paths(data if isinstance(data, dict) else {})
     for path in paths:
         try:
-            message = sync_before(path, force=args.force)
+            message = sync_before(path, force=args.force, lock_timeout=args.lock_timeout)
             print(f"[overleaf-git-sync] {message}", file=sys.stderr)
         except NoProject:
             continue
@@ -652,6 +828,56 @@ def timestamp() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def watch_error_message(args: argparse.Namespace, repo: pathlib.Path, exc: SyncError) -> str | None:
+    text = str(exc)
+    if text.startswith("worktree has local changes"):
+        return (
+            "skipped: worktree has local changes; "
+            "commit/stash or run sync-after to resume auto-pull"
+        )
+    if "would be overwritten" in text or "Please commit your changes" in text:
+        try:
+            status, detail = dry_run_conflict_report(repo)
+            if status == "clean":
+                return (
+                    "pending: same-file update appears mergeable; "
+                    f"run `overleaf-git-sync reconcile {args.path}` to apply it"
+                )
+            if status == "conflict":
+                return f"pending: {detail}"
+            return f"pending: {detail}"
+        except Exception as report_exc:
+            return (
+                "skipped: remote update would overwrite local changes; "
+                f"conflict probe failed: {report_exc}"
+            )
+    return None
+
+
+def watch_once_message(args: argparse.Namespace) -> str:
+    repo, remote, branch, source = resolve_project(
+        args.path,
+        remote_override=args.remote,
+        branch_override=args.branch,
+    )
+    with RepoLock(repo, "watch", timeout=args.lock_timeout):
+        try:
+            return _sync_before_resolved(
+                repo,
+                remote,
+                branch,
+                source,
+                force=True,
+                allow_dirty=not args.require_clean,
+                debounce_seconds=0,
+            )
+        except SyncError as exc:
+            message = watch_error_message(args, repo, exc)
+            if message is not None:
+                return message
+            raise
+
+
 def cmd_watch(args: argparse.Namespace) -> None:
     if args.interval < 1:
         raise SyncError("--interval must be at least 1 second")
@@ -661,55 +887,18 @@ def cmd_watch(args: argparse.Namespace) -> None:
     )
     while True:
         try:
-            message = sync_before(
-                args.path,
-                remote_override=args.remote,
-                branch_override=args.branch,
-                force=True,
-                allow_dirty=not args.require_clean,
-                debounce_seconds=0,
-            )
+            message = watch_once_message(args)
             print(f"[{timestamp()}] {message}", flush=True)
         except NoProject as exc:
             print(f"[{timestamp()}] noop: {exc}", flush=True)
             if args.once:
                 return
+        except LockBusy as exc:
+            print(f"[{timestamp()}] skipped: {exc}", flush=True)
         except SyncError as exc:
-            text = str(exc)
-            if text.startswith("worktree has local changes"):
-                print(
-                    f"[{timestamp()}] skipped: worktree has local changes; "
-                    "commit/stash or run sync-after to resume auto-pull",
-                    flush=True,
-                )
-            elif "would be overwritten" in text or "Please commit your changes" in text:
-                try:
-                    repo, _, _, _ = resolve_project(
-                        args.path,
-                        remote_override=args.remote,
-                        branch_override=args.branch,
-                    )
-                    status, detail = dry_run_conflict_report(repo)
-                    if status == "clean":
-                        print(
-                            f"[{timestamp()}] pending: same-file update appears mergeable; "
-                            f"run `overleaf-git-sync reconcile {args.path}` to apply it",
-                            flush=True,
-                        )
-                    elif status == "conflict":
-                        print(f"[{timestamp()}] pending: {detail}", flush=True)
-                    else:
-                        print(f"[{timestamp()}] pending: {detail}", flush=True)
-                except Exception as report_exc:
-                    print(
-                        f"[{timestamp()}] skipped: remote update would overwrite local changes; "
-                        f"conflict probe failed: {report_exc}",
-                        flush=True,
-                    )
-            else:
-                print(f"[{timestamp()}] blocked: {exc}", flush=True)
-                if args.stop_on_error:
-                    raise
+            print(f"[{timestamp()}] blocked: {exc}", flush=True)
+            if args.stop_on_error:
+                raise
         if args.once:
             return
         try:
@@ -727,6 +916,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("path", nargs="?", default=".")
     init.add_argument("--remote")
     init.add_argument("--branch")
+    init.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     init.set_defaults(func=cmd_init)
 
     before = sub.add_parser("sync-before", help="fast-forward from Overleaf before AI edits")
@@ -736,6 +926,7 @@ def build_parser() -> argparse.ArgumentParser:
     before.add_argument("--force", action="store_true")
     before.add_argument("--allow-dirty", action="store_true")
     before.add_argument("--debounce-seconds", type=int, default=DEFAULT_DEBOUNCE_SECONDS)
+    before.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     before.set_defaults(
         func=lambda args: print(
             sync_before(
@@ -745,6 +936,7 @@ def build_parser() -> argparse.ArgumentParser:
                 force=args.force,
                 allow_dirty=args.allow_dirty,
                 debounce_seconds=args.debounce_seconds,
+                lock_timeout=args.lock_timeout,
             )
         )
     )
@@ -756,6 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     after.add_argument("--message", "-m", default="Update Overleaf project")
     after.add_argument("--no-push", action="store_true")
     after.add_argument("--all-latex", action="store_true")
+    after.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     after.set_defaults(
         func=lambda args: print(
             sync_after(
@@ -765,6 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
                 message=args.message,
                 push=not args.no_push,
                 all_latex=args.all_latex,
+                lock_timeout=args.lock_timeout,
             )
         )
     )
@@ -774,16 +968,19 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--remote")
     status.add_argument("--branch")
     status.add_argument("--fetch", action="store_true")
+    status.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     status.set_defaults(func=cmd_status)
 
     reconcile_parser = sub.add_parser("reconcile", help="explicitly merge Overleaf updates with local dirty changes")
     reconcile_parser.add_argument("path", nargs="?", default=".")
     reconcile_parser.add_argument("--remote")
     reconcile_parser.add_argument("--branch")
+    reconcile_parser.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     reconcile_parser.set_defaults(func=cmd_reconcile)
 
     hook = sub.add_parser("hook", help="PreToolUse hook entrypoint; reads JSON on stdin")
     hook.add_argument("--force", action="store_true")
+    hook.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     hook.set_defaults(func=cmd_hook)
 
     hook_config = sub.add_parser("hook-config", help="print the hook command to wire into Codex")
@@ -797,6 +994,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--once", action="store_true", help="run one polling iteration and exit")
     watch.add_argument("--require-clean", action="store_true", help="skip whenever the worktree has local changes")
     watch.add_argument("--stop-on-error", action="store_true")
+    watch.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     watch.set_defaults(func=cmd_watch)
 
     return parser

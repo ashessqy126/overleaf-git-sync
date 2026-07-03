@@ -13,6 +13,7 @@ Use the `overleaf-git-sync` CLI when it is on `PATH`. If the command is not avai
 - Before editing `.tex`, `.bib`, `.cls`, `.sty`, or `.bst`, run `sync-before` on the file or project folder.
 - `sync-before` requires a clean tracked worktree, fetches the Overleaf remote, and only fast-forwards. If the repo diverged or has local changes, stop and ask the user to resolve Git state.
 - After editing, run `sync-after` with the exact files changed in this turn. It refuses to commit pre-staged changes, stages only those files, commits, and pushes `HEAD` to the Overleaf branch.
+- `sync-before`, `sync-after`, `reconcile`, and `watch` share a per-worktree lock under the Git directory. If a helper agent is polling while the main agent commits or pulls, one side waits or reports that another sync is running instead of touching the worktree concurrently.
 - Never use `git add .` for this workflow.
 
 ## Setup
@@ -66,6 +67,8 @@ overleaf-git-sync hook-config
 ```
 
 Use `watch` only when the user explicitly asks for Dropbox-like polling. It is pull-only and should be described as safe auto-pull, not as full bidirectional background sync. By default it allows non-overlapping remote updates while local files are dirty and lets Git refuse updates that would overwrite local work; use `--require-clean` only when the user wants stricter behavior.
+
+For a dedicated sync subagent, let that helper run `overleaf-git-sync watch . --interval 5` while the main agent continues to follow the normal before/after editing workflow. The watcher and editing commands share the same lock, so the helper should not run raw `git pull`, `git stash`, or `git push` outside this CLI.
 
 When watch reports that a same-file remote update appears mergeable, run `reconcile` only after the user or task explicitly wants to apply it. `reconcile` may create conflict markers when the local and Overleaf changes touch the same position; if that happens, resolve those markers before any `sync-after`.
 

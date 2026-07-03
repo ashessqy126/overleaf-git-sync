@@ -68,11 +68,18 @@ The watcher is deliberately pull-only:
 
 - it runs `sync-before` every interval;
 - it only fast-forwards from Overleaf;
+- it shares a per-worktree lock with `sync-before`, `sync-after`, and `reconcile`, so a helper watcher and the main agent do not mutate the Git worktree at the same time;
 - it lets Git pull non-overlapping remote changes even when other local files are dirty;
 - when the same dirty file is also updated remotely, it performs a temporary dry-run merge and reports whether the update is line-mergeable or a same-position conflict;
 - it never commits or pushes automatically.
 
 Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. If you want the older stricter behavior, pass `--require-clean` so the watcher skips whenever the worktree has local changes.
+
+For a session-only sync helper, ask a dedicated subagent to run the watcher while the main agent edits normally:
+
+```text
+Use overleaf-git-sync as a sync helper for this Overleaf project: run `overleaf-git-sync watch . --interval 5` and report pending conflicts, but do not commit, push, stash, or edit files.
+```
 
 If watch reports that a same-file update appears mergeable, apply it explicitly:
 
@@ -101,6 +108,7 @@ overleaf-git-sync sync-after main.tex refs.bib -m "Update paper"
 ## Safety Rules
 
 - Only runs in repos with a `git.overleaf.com` remote or `.overleaf-git-sync.json`.
+- Uses a Git-directory lock (`overleaf-git-sync.lock`) so concurrent agent helpers do not pull, reconcile, commit, or push at the same time.
 - `sync-before` requires a clean tracked worktree and only fast-forwards.
 - Diverged history blocks the edit instead of merging automatically.
 - `sync-after` refuses pre-staged changes.
@@ -134,13 +142,13 @@ overleaf-git-sync hook-config
 ## Commands
 
 ```text
-overleaf-git-sync init [path] [--remote overleaf] [--branch master]
-overleaf-git-sync sync-before [path] [--force] [--allow-dirty]
-overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex]
-overleaf-git-sync watch [path] [--interval 5] [--require-clean]
-overleaf-git-sync reconcile [path]
-overleaf-git-sync status [path] [--fetch]
-overleaf-git-sync hook
+overleaf-git-sync init [path] [--remote overleaf] [--branch master] [--lock-timeout 60]
+overleaf-git-sync sync-before [path] [--force] [--allow-dirty] [--lock-timeout 60]
+overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex] [--lock-timeout 60]
+overleaf-git-sync watch [path] [--interval 5] [--require-clean] [--lock-timeout 60]
+overleaf-git-sync reconcile [path] [--lock-timeout 60]
+overleaf-git-sync status [path] [--fetch] [--lock-timeout 60]
+overleaf-git-sync hook [--lock-timeout 60]
 overleaf-git-sync hook-config
 ```
 
