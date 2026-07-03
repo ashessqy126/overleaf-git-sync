@@ -259,11 +259,11 @@ Agent integrations are optional:
 - Claude Code, if you want the installed Claude skill and PreToolUse hook
 - Codex CLI, if you want the installer to register the local Codex plugin marketplace
 
-## Porting to Other Systems
+## Credential Setup by System
 
-The portable rule is simple: before enabling supervised watcher automation, make sure Git can reach Overleaf non-interactively.
+Before enabling supervised watcher automation, make sure Git can reach Overleaf non-interactively.
 
-First-time Overleaf credential setup:
+First-time Overleaf Git credential setup:
 
 1. In Overleaf, create a Git authentication token from Account Settings or from the Git integration dialog for the project. Overleaf's current Git authentication method uses username `git` and the authentication token as the password.
 2. Make sure the remote URL includes the `git` username:
@@ -329,7 +329,7 @@ git config --global credential.helper manager
 
 For Codex running inside WSL, configure credentials inside WSL as well, or use the Linux instructions. Windows Git credentials do not automatically become available to WSL Git unless that bridge is configured.
 
-`tmux` availability:
+`tmux` setup:
 
 - macOS: install with Homebrew if needed, for example `brew install tmux`.
 - Linux: install from the system package manager, such as `apt install tmux` or `dnf install tmux`.
