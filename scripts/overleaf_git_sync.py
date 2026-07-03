@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -828,6 +829,209 @@ def timestamp() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def tmux_binary() -> str:
+    tmux = shutil.which("tmux")
+    if not tmux:
+        raise SyncError("tmux is required for watch-supervisor/watch-health")
+    return tmux
+
+
+def default_session_name(repo: pathlib.Path) -> str:
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", repo.name).strip("-") or "project"
+    digest = hashlib.sha1(str(repo.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"overleaf-git-sync-{name}-{digest}"
+
+
+def tmux_has_session(session: str) -> bool:
+    proc = subprocess.run(
+        [tmux_binary(), "has-session", "-t", session],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def tmux_capture(session: str, *, lines: int = 25) -> list[str]:
+    proc = subprocess.run(
+        [tmux_binary(), "capture-pane", "-J", "-t", session, "-p", "-S", f"-{max(1, lines)}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise SyncError(f"tmux capture-pane failed for {session}: {detail}")
+    captured = [line.rstrip() for line in proc.stdout.splitlines() if line.strip()]
+    return captured[-max(1, lines):]
+
+
+def latest_watch_line(lines: list[str]) -> str | None:
+    for line in reversed(lines):
+        if line.startswith("[") and "] " in line:
+            return line
+    return None
+
+
+def watch_line_epoch(line: str | None) -> float | None:
+    if not line or not line.startswith("[") or "]" not in line:
+        return None
+    raw = line[1:line.index("]")]
+    try:
+        return time.mktime(time.strptime(raw, "%Y-%m-%d %H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def watch_health_state(line: str | None) -> tuple[str, str]:
+    if not line:
+        return "unknown", "no watcher status line found"
+    text = line.lower()
+    if "up to date" in text or "fast-forwarded" in text:
+        return "ok", line
+    if "local ahead of overleaf" in text:
+        return "attention", line
+    if any(token in text for token in ("blocked:", "pending:", "diverged", "conflict", "skipped:", "noop:")):
+        return "attention", line
+    return "unknown", line
+
+
+def resolve_watch_target(args: argparse.Namespace) -> tuple[pathlib.Path, str, str, str, str]:
+    repo, remote, branch, source = resolve_project(
+        args.path,
+        remote_override=getattr(args, "remote", None),
+        branch_override=getattr(args, "branch", None),
+    )
+    session = args.session_name or default_session_name(repo)
+    return repo, remote, branch, source, session
+
+
+def supervised_watch_command(
+    script: pathlib.Path,
+    repo: pathlib.Path,
+    remote: str,
+    branch: str,
+    args: argparse.Namespace,
+) -> list[str]:
+    command = [
+        sys.executable,
+        str(script),
+        "watch",
+        str(repo),
+        "--remote",
+        remote,
+        "--branch",
+        branch,
+        "--interval",
+        str(args.interval),
+        "--lock-timeout",
+        str(args.lock_timeout),
+    ]
+    if getattr(args, "require_clean", False):
+        command.append("--require-clean")
+    return command
+
+
+def start_supervised_watch(args: argparse.Namespace) -> str:
+    repo, remote, branch, _, session = resolve_watch_target(args)
+    if tmux_has_session(session):
+        return f"already running: {session} ({repo})"
+    script = pathlib.Path(__file__).resolve()
+    command = supervised_watch_command(script, repo, remote, branch, args)
+    proc = subprocess.run(
+        [
+            tmux_binary(),
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-c",
+            str(repo),
+            shlex.join(command),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise SyncError(f"tmux new-session failed for {session}: {detail}")
+    return f"started: {session} -> {shlex.join(command)}"
+
+
+def cmd_watch_supervisor(args: argparse.Namespace) -> int:
+    repo, _, _, _, session = resolve_watch_target(args)
+
+    if args.action == "start":
+        print(start_supervised_watch(args))
+        return 0
+
+    if args.action == "restart":
+        if tmux_has_session(session):
+            subprocess.run([tmux_binary(), "kill-session", "-t", session], check=False)
+        print(start_supervised_watch(args))
+        return 0
+
+    if args.action == "stop":
+        if not tmux_has_session(session):
+            print(f"stopped: {session} is not running")
+            return 0
+        subprocess.run([tmux_binary(), "kill-session", "-t", session], check=False)
+        print(f"stopped: {session}")
+        return 0
+
+    if args.action == "status":
+        if not tmux_has_session(session):
+            print(f"stopped: {session} ({repo})")
+            return 1
+        line = latest_watch_line(tmux_capture(session, lines=args.lines))
+        state, detail = watch_health_state(line)
+        print(f"{state}: {session} ({repo})")
+        if detail:
+            print(detail)
+        return 0 if state == "ok" else 2
+
+    if args.action == "logs":
+        if not tmux_has_session(session):
+            print(f"stopped: {session} ({repo})")
+            return 1
+        for line in tmux_capture(session, lines=args.lines):
+            print(line)
+        return 0
+
+    raise SyncError(f"unknown watch-supervisor action: {args.action}")
+
+
+def cmd_watch_health(args: argparse.Namespace) -> int:
+    repo, _, _, _, session = resolve_watch_target(args)
+    if not tmux_has_session(session):
+        if args.restart_missing:
+            print(start_supervised_watch(args))
+            return 0
+        print(f"missing: watcher session {session} is not running for {repo}")
+        return 1
+
+    lines = tmux_capture(session, lines=args.lines)
+    line = latest_watch_line(lines)
+    state, detail = watch_health_state(line)
+    age = None
+    epoch = watch_line_epoch(line)
+    if epoch is not None:
+        age = max(0, int(time.time() - epoch))
+        if age > args.max_age_seconds:
+            state = "attention"
+            detail = f"stale: latest watcher status is {age}s old: {line}"
+
+    print(f"{state}: watcher {session} for {repo}")
+    if detail:
+        print(detail)
+    if args.print_logs:
+        print("--- recent watcher output ---")
+        for item in lines[-args.lines:]:
+            print(item)
+    return 0 if state == "ok" else 2
+
+
 def watch_error_message(args: argparse.Namespace, repo: pathlib.Path, exc: SyncError) -> str | None:
     text = str(exc)
     if text.startswith("worktree has local changes"):
@@ -997,6 +1201,32 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
     watch.set_defaults(func=cmd_watch)
 
+    supervisor = sub.add_parser("watch-supervisor", help="manage a tmux-backed background watcher")
+    supervisor.add_argument("action", choices=("start", "stop", "restart", "status", "logs"))
+    supervisor.add_argument("path", nargs="?", default=".")
+    supervisor.add_argument("--remote")
+    supervisor.add_argument("--branch")
+    supervisor.add_argument("--session-name")
+    supervisor.add_argument("--interval", type=int, default=5)
+    supervisor.add_argument("--require-clean", action="store_true")
+    supervisor.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
+    supervisor.add_argument("--lines", type=int, default=25)
+    supervisor.set_defaults(func=cmd_watch_supervisor)
+
+    health = sub.add_parser("watch-health", help="automation-friendly watcher health check")
+    health.add_argument("path", nargs="?", default=".")
+    health.add_argument("--remote")
+    health.add_argument("--branch")
+    health.add_argument("--session-name")
+    health.add_argument("--interval", type=int, default=5, help="interval to use if --restart-missing starts watch")
+    health.add_argument("--require-clean", action="store_true")
+    health.add_argument("--restart-missing", action="store_true")
+    health.add_argument("--max-age-seconds", type=int, default=120)
+    health.add_argument("--lines", type=int, default=25)
+    health.add_argument("--print-logs", action="store_true")
+    health.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)
+    health.set_defaults(func=cmd_watch_health)
+
     return parser
 
 
@@ -1004,8 +1234,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        args.func(args)
-        return 0
+        result = args.func(args)
+        return int(result or 0)
     except NoProject as exc:
         print(f"NOOP: {exc}", file=sys.stderr)
         return 0

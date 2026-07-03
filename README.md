@@ -75,12 +75,6 @@ The watcher is deliberately pull-only:
 
 Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. If you want the older stricter behavior, pass `--require-clean` so the watcher skips whenever the worktree has local changes.
 
-For a session-only sync helper, ask a dedicated subagent to run the watcher while the main agent edits normally:
-
-```text
-Use overleaf-git-sync as a sync helper for this Overleaf project: run `overleaf-git-sync watch . --interval 5` and report pending conflicts, but do not commit, push, stash, or edit files.
-```
-
 If watch reports that a same-file update appears mergeable, apply it explicitly:
 
 ```bash
@@ -88,6 +82,39 @@ overleaf-git-sync reconcile .
 ```
 
 `reconcile` stashes local changes, fast-forwards to Overleaf, then pops the stash. If Git detects a true same-position conflict, it leaves conflict markers in the affected files and reports line ranges such as `section1.tex:143-158`.
+
+## Supervised Watcher and Automation Health Checks
+
+For a watcher that should survive outside the current agent turn, prefer the built-in supervisor instead of a long-running subagent:
+
+```bash
+overleaf-git-sync watch-supervisor start . --interval 5
+```
+
+The supervisor uses `tmux` to run the normal pull-only watcher in the background. It does not add a second sync path; it only manages the same `watch` command.
+
+Useful supervisor commands:
+
+```bash
+overleaf-git-sync watch-supervisor status .
+overleaf-git-sync watch-supervisor logs .
+overleaf-git-sync watch-supervisor restart . --interval 5
+overleaf-git-sync watch-supervisor stop .
+```
+
+For Codex automations or cron-style monitors, run a health check every few minutes:
+
+```bash
+overleaf-git-sync watch-health . --restart-missing --interval 5
+```
+
+`watch-health` checks that the supervised watcher is alive and that the latest watcher status is healthy. With `--restart-missing`, it restarts the supervised watcher if the session is gone. It reports attention-needed states such as pending conflicts, diverged history, repeated lock skips, stale output, or current fetch errors. It does not run `sync-before` itself, so it avoids creating a second polling loop.
+
+Exit codes are intended for automation:
+
+- `0`: watcher is running and healthy, or was restarted because it was missing;
+- `1`: watcher is missing and `--restart-missing` was not passed;
+- `2`: watcher is running but the latest status needs attention.
 
 ## Agent Workflow
 
@@ -146,6 +173,8 @@ overleaf-git-sync init [path] [--remote overleaf] [--branch master] [--lock-time
 overleaf-git-sync sync-before [path] [--force] [--allow-dirty] [--lock-timeout 60]
 overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex] [--lock-timeout 60]
 overleaf-git-sync watch [path] [--interval 5] [--require-clean] [--lock-timeout 60]
+overleaf-git-sync watch-supervisor {start|stop|restart|status|logs} [path] [--interval 5]
+overleaf-git-sync watch-health [path] [--restart-missing] [--interval 5]
 overleaf-git-sync reconcile [path] [--lock-timeout 60]
 overleaf-git-sync status [path] [--fetch] [--lock-timeout 60]
 overleaf-git-sync hook [--lock-timeout 60]
@@ -156,6 +185,7 @@ overleaf-git-sync hook-config
 
 - Python 3.8+
 - Git
+- `tmux` for `watch-supervisor` and `watch-health`
 - Overleaf Git integration enabled for the project
 - Git credentials configured for `https://git.overleaf.com/<project_id>`
 

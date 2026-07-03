@@ -62,13 +62,17 @@ Use `--no-push` only if the user explicitly wants a local commit without updatin
 overleaf-git-sync status .
 overleaf-git-sync status . --fetch
 overleaf-git-sync watch . --interval 5
+overleaf-git-sync watch-supervisor start . --interval 5
+overleaf-git-sync watch-health . --restart-missing --interval 5
 overleaf-git-sync reconcile .
 overleaf-git-sync hook-config
 ```
 
 Use `watch` only when the user explicitly asks for Dropbox-like polling. It is pull-only and should be described as safe auto-pull, not as full bidirectional background sync. By default it allows non-overlapping remote updates while local files are dirty and lets Git refuse updates that would overwrite local work; use `--require-clean` only when the user wants stricter behavior.
 
-For a dedicated sync subagent, let that helper run `overleaf-git-sync watch . --interval 5` while the main agent continues to follow the normal before/after editing workflow. The watcher and editing commands share the same lock, so the helper should not run raw `git pull`, `git stash`, or `git push` outside this CLI.
+For a long-running background watcher, prefer `watch-supervisor start` over a dedicated sync subagent. The supervisor uses `tmux` to keep the normal `watch` command running after the current agent turn. Use `watch-supervisor status`, `watch-supervisor logs`, `watch-supervisor restart`, and `watch-supervisor stop` to inspect or manage it.
+
+For Codex automations or cron-style monitors, schedule `watch-health . --restart-missing --interval 5` every few minutes. `watch-health` checks that the supervised watcher is alive, restarts it if it is missing, and reports attention-needed states such as pending conflicts, diverged history, stale output, repeated lock skips, or current fetch errors. It does not run `sync-before` itself, so it should be treated as a watcher health check rather than a second synchronization loop.
 
 When watch reports that a same-file remote update appears mergeable, run `reconcile` only after the user or task explicitly wants to apply it. `reconcile` may create conflict markers when the local and Overleaf changes touch the same position; if that happens, resolve those markers before any `sync-after`.
 
