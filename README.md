@@ -87,7 +87,7 @@ Use overleaf-git-sync: start supervised background auto-pull for this Overleaf p
 Add automation health checks:
 
 ```text
-Use overleaf-git-sync: create a Codex automation that checks this project's supervised watcher every 5 minutes with watch-health --restart-missing --interval 5 --max-age-seconds 300, and reports attention-needed states. The automation must be health-only: do not run status --fetch, sync-before, raw git fetch, raw git pull, stash, add, commit, or push.
+Use overleaf-git-sync: create a current-thread Codex heartbeat that checks this project's supervised watcher every 5 minutes with watch-health --restart-missing --interval 5 --max-age-seconds 300, and reports attention-needed states in this same thread. The automation must be health-only: do not create a cron/workspace session, and do not run status --fetch, sync-before, raw git fetch, raw git pull, stash, add, commit, or push.
 ```
 
 Check or stop background syncing:
@@ -166,7 +166,7 @@ overleaf-git-sync watch-health . --restart-missing --interval 5
 
 `watch-health` checks that the supervised watcher is alive and that the latest watcher status is healthy. With `--restart-missing`, it restarts the supervised watcher if the session is gone. It reports attention-needed states such as pending conflicts, diverged history, repeated lock skips, stale output, or current fetch errors. It does not run `sync-before` itself, so it avoids creating a second polling loop.
 
-When creating an automation, make it a health monitor only. The automation should run `watch-health . --restart-missing --interval 5 --max-age-seconds 300`; it should not run `status . --fetch`, `sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`.
+When creating an automation, make it a current-thread heartbeat and a health monitor only. The heartbeat should run `watch-health . --restart-missing --interval 5 --max-age-seconds 300`; it should not create a cron/workspace session, and it should not run `status . --fetch`, `sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`.
 
 For unattended watcher health checks, make sure Git can authenticate to `git.overleaf.com` without a terminal password prompt. A supervised watcher will not wait for interactive credentials.
 
