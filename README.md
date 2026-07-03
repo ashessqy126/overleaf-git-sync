@@ -56,6 +56,23 @@ overleaf-git-sync init --remote overleaf --branch master
 
 If your local branch is `main`, use `--branch main`. The command writes `.overleaf-git-sync.json` so hooks and agents know this repo is opted in.
 
+## Optional: Poll Like Dropbox
+
+Git does not update your local working tree in the background by itself. If you want a Dropbox-like local auto-pull loop, run:
+
+```bash
+overleaf-git-sync watch . --interval 5
+```
+
+The watcher is deliberately pull-only:
+
+- it runs `sync-before` every interval;
+- it only fast-forwards from Overleaf;
+- it skips while supported LaTeX files have local uncommitted changes;
+- it never commits or pushes automatically.
+
+Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. Stop it before heavy local editing, or let it skip until you commit, stash, or push your local changes.
+
 ## Agent Workflow
 
 Before editing supported files (`.tex`, `.bib`, `.cls`, `.sty`, `.bst`):
@@ -111,6 +128,7 @@ overleaf-git-sync hook-config
 overleaf-git-sync init [path] [--remote overleaf] [--branch master]
 overleaf-git-sync sync-before [path] [--force] [--allow-dirty]
 overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex]
+overleaf-git-sync watch [path] [--interval 5]
 overleaf-git-sync status [path] [--fetch]
 overleaf-git-sync hook
 overleaf-git-sync hook-config

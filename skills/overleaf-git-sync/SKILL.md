@@ -60,7 +60,10 @@ Use `--no-push` only if the user explicitly wants a local commit without updatin
 ```bash
 overleaf-git-sync status .
 overleaf-git-sync status . --fetch
+overleaf-git-sync watch . --interval 5
 overleaf-git-sync hook-config
 ```
+
+Use `watch` only when the user explicitly asks for Dropbox-like polling. It is pull-only and should be described as safe auto-pull, not as full bidirectional background sync.
 
 `hook` is provided as a PreToolUse entrypoint for environments that support wiring Codex hooks. The skill remains the primary enforcement path inside Codex because hook coverage differs by platform and Codex version.

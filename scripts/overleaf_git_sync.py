@@ -506,6 +506,53 @@ def cmd_hook_config(args: argparse.Namespace) -> None:
     print(f"python3 {shlex.quote(str(script))} hook")
 
 
+def timestamp() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    if args.interval < 1:
+        raise SyncError("--interval must be at least 1 second")
+    print(
+        f"[overleaf-git-sync] watching {args.path} every {args.interval}s "
+        "(pull-only, fast-forward only; Ctrl-C to stop)"
+    )
+    while True:
+        try:
+            message = sync_before(
+                args.path,
+                remote_override=args.remote,
+                branch_override=args.branch,
+                force=True,
+                allow_dirty=False,
+                debounce_seconds=0,
+            )
+            print(f"[{timestamp()}] {message}", flush=True)
+        except NoProject as exc:
+            print(f"[{timestamp()}] noop: {exc}", flush=True)
+            if args.once:
+                return
+        except SyncError as exc:
+            text = str(exc)
+            if text.startswith("worktree has local changes"):
+                print(
+                    f"[{timestamp()}] skipped: worktree has local changes; "
+                    "commit/stash or run sync-after to resume auto-pull",
+                    flush=True,
+                )
+            else:
+                print(f"[{timestamp()}] blocked: {exc}", flush=True)
+                if args.stop_on_error:
+                    raise
+        if args.once:
+            return
+        try:
+            time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\n[overleaf-git-sync] watch stopped")
+            return
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="overleaf-git-sync")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -569,6 +616,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     hook_config = sub.add_parser("hook-config", help="print the hook command to wire into Codex")
     hook_config.set_defaults(func=cmd_hook_config)
+
+    watch = sub.add_parser("watch", help="poll Overleaf and fast-forward while the worktree is clean")
+    watch.add_argument("path", nargs="?", default=".")
+    watch.add_argument("--remote")
+    watch.add_argument("--branch")
+    watch.add_argument("--interval", type=int, default=10)
+    watch.add_argument("--once", action="store_true", help="run one polling iteration and exit")
+    watch.add_argument("--stop-on-error", action="store_true")
+    watch.set_defaults(func=cmd_watch)
 
     return parser
 
