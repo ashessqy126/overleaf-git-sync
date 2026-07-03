@@ -914,6 +914,8 @@ def supervised_watch_command(
     args: argparse.Namespace,
 ) -> list[str]:
     command = [
+        "env",
+        "GIT_TERMINAL_PROMPT=0",
         sys.executable,
         str(script),
         "watch",
