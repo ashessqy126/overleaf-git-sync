@@ -1,6 +1,6 @@
 {
   "name": "overleaf-git-sync",
-  "version": "0.1.3+codex.20260703154309",
+  "version": "0.1.3+codex.20260703155829",
   "description": "Safely synchronize Overleaf Git projects before and after AI edits.",
   "author": {
     "name": "ashessqy126",
@@ -32,8 +32,8 @@
       "Set up this Overleaf Git project for safe AI edits.",
       "Sync this Overleaf paper before editing.",
       "Commit and push my LaTeX edits to Overleaf.",
-      "Start supervised Overleaf auto-pull for this project.",
-      "Create a current-thread heartbeat to check the Overleaf watcher."
+      "Start Overleaf background sync with watcher and heartbeat.",
+      "Stop Overleaf background sync and its heartbeat."
     ]
   }
 }

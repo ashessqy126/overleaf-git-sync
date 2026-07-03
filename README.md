@@ -78,16 +78,10 @@ Commit existing local LaTeX edits:
 Use overleaf-git-sync: inspect the current LaTeX changes, then run sync-after with exactly the supported files I changed and push them to Overleaf.
 ```
 
-Start near-real-time auto-pull:
+Start background sync:
 
 ```text
-Use overleaf-git-sync: start supervised background auto-pull for this Overleaf project with watch-supervisor at a 5 second interval. Do not use a long-running subagent.
-```
-
-Add automation health checks:
-
-```text
-Use overleaf-git-sync: create a current-thread Codex heartbeat that checks this project's supervised watcher every 5 minutes with watch-health --restart-missing --interval 5 --max-age-seconds 300, and reports attention-needed states in this same thread. The automation must be health-only: do not create a cron/workspace session, and do not run status --fetch, sync-before, raw git fetch, raw git pull, stash, add, commit, or push.
+Use overleaf-git-sync: start background sync for this Overleaf project. Start the supervised tmux-backed watcher with watch-supervisor at a 5 second interval, then create a current-thread Codex heartbeat that checks watcher health every 5 minutes with watch-health --restart-missing --interval 5 --max-age-seconds 300. Do not use a long-running subagent, and do not create a cron/workspace session.
 ```
 
 Check or stop background syncing:
@@ -97,7 +91,7 @@ Use overleaf-git-sync: show the supervised watcher status and recent logs for th
 ```
 
 ```text
-Use overleaf-git-sync: stop the supervised background watcher for this project.
+Use overleaf-git-sync: stop background sync for this Overleaf project. Stop the tmux-backed watcher/background process and delete the current-thread heartbeat health check.
 ```
 
 Handle a pending same-file update:
@@ -148,6 +142,8 @@ overleaf-git-sync watch-supervisor start . --interval 5
 ```
 
 The supervisor uses `tmux` to run the normal pull-only watcher in the background. It does not add a second sync path; it only manages the same `watch` command. Supervised watchers disable interactive Git password prompts, so configure Overleaf Git credentials ahead of time; otherwise the watcher reports an attention-needed authentication error instead of hanging.
+
+When users ask to start or stop background sync, background watcher, guarded sync, auto-pull, polling, or watcher health, treat it as a paired operation over both pieces: the supervised tmux watcher and the current-thread heartbeat that monitors it. Starting background sync means starting the watcher and creating the heartbeat. Stopping background sync means stopping the watcher and deleting the heartbeat. Only act on one piece alone when the user explicitly says "only the heartbeat" or "only the tmux watcher".
 
 Useful supervisor commands:
 
