@@ -64,6 +64,6 @@ overleaf-git-sync watch . --interval 5
 overleaf-git-sync hook-config
 ```
 
-Use `watch` only when the user explicitly asks for Dropbox-like polling. It is pull-only and should be described as safe auto-pull, not as full bidirectional background sync.
+Use `watch` only when the user explicitly asks for Dropbox-like polling. It is pull-only and should be described as safe auto-pull, not as full bidirectional background sync. By default it allows non-overlapping remote updates while local files are dirty and lets Git refuse updates that would overwrite local work; use `--require-clean` only when the user wants stricter behavior.
 
 `hook` is provided as a PreToolUse entrypoint for environments that support wiring Codex hooks. The skill remains the primary enforcement path inside Codex because hook coverage differs by platform and Codex version.

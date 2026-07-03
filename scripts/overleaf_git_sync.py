@@ -524,7 +524,7 @@ def cmd_watch(args: argparse.Namespace) -> None:
                 remote_override=args.remote,
                 branch_override=args.branch,
                 force=True,
-                allow_dirty=False,
+                allow_dirty=not args.require_clean,
                 debounce_seconds=0,
             )
             print(f"[{timestamp()}] {message}", flush=True)
@@ -538,6 +538,12 @@ def cmd_watch(args: argparse.Namespace) -> None:
                 print(
                     f"[{timestamp()}] skipped: worktree has local changes; "
                     "commit/stash or run sync-after to resume auto-pull",
+                    flush=True,
+                )
+            elif "would be overwritten" in text or "Please commit your changes" in text:
+                print(
+                    f"[{timestamp()}] skipped: remote update would overwrite local changes; "
+                    "commit/stash or run sync-after, then watch will resume",
                     flush=True,
                 )
             else:
@@ -623,6 +629,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--branch")
     watch.add_argument("--interval", type=int, default=10)
     watch.add_argument("--once", action="store_true", help="run one polling iteration and exit")
+    watch.add_argument("--require-clean", action="store_true", help="skip whenever the worktree has local changes")
     watch.add_argument("--stop-on-error", action="store_true")
     watch.set_defaults(func=cmd_watch)
 

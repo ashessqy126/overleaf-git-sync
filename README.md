@@ -68,10 +68,11 @@ The watcher is deliberately pull-only:
 
 - it runs `sync-before` every interval;
 - it only fast-forwards from Overleaf;
-- it skips while supported LaTeX files have local uncommitted changes;
+- it lets Git pull non-overlapping remote changes even when other local files are dirty;
+- it skips only when the remote update would overwrite local uncommitted changes;
 - it never commits or pushes automatically.
 
-Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. Stop it before heavy local editing, or let it skip until you commit, stash, or push your local changes.
+Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. If you want the older stricter behavior, pass `--require-clean` so the watcher skips whenever the worktree has local changes.
 
 ## Agent Workflow
 
@@ -128,7 +129,7 @@ overleaf-git-sync hook-config
 overleaf-git-sync init [path] [--remote overleaf] [--branch master]
 overleaf-git-sync sync-before [path] [--force] [--allow-dirty]
 overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex]
-overleaf-git-sync watch [path] [--interval 5]
+overleaf-git-sync watch [path] [--interval 5] [--require-clean]
 overleaf-git-sync status [path] [--fetch]
 overleaf-git-sync hook
 overleaf-git-sync hook-config
