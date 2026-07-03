@@ -259,6 +259,84 @@ Agent integrations are optional:
 - Claude Code, if you want the installed Claude skill and PreToolUse hook
 - Codex CLI, if you want the installer to register the local Codex plugin marketplace
 
+## Porting to Other Systems
+
+The portable rule is simple: before enabling supervised watcher automation, make sure Git can reach Overleaf non-interactively.
+
+First-time Overleaf credential setup:
+
+1. In Overleaf, create a Git authentication token from Account Settings or from the Git integration dialog for the project. Overleaf's current Git authentication method uses username `git` and the authentication token as the password.
+2. Make sure the remote URL includes the `git` username:
+
+   ```bash
+   git remote set-url origin https://git@git.overleaf.com/<project_id>
+   ```
+
+3. Configure a credential helper for the operating system. See the platform notes below.
+4. Run one interactive Git command from the project:
+
+   ```bash
+   git ls-remote --heads origin
+   ```
+
+   When prompted, use username `git` and paste the Overleaf Git authentication token as the password. The credential helper should store it so future background checks can run without prompting.
+
+5. Verify unattended access:
+
+   ```bash
+   GIT_TERMINAL_PROMPT=0 git ls-remote --heads origin
+   ```
+
+If that command succeeds, `watch-supervisor` and `watch-health` can run unattended. If it fails with a password or credential error, configure a Git credential helper first.
+
+Official reference: [Overleaf Git integration authentication tokens](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration/git-integration-authentication-tokens).
+
+macOS:
+
+```bash
+git config credential.helper osxkeychain
+```
+
+Some agent runtimes ship their own Git and cannot find `git-credential-osxkeychain` by name. In that case, configure the helper with an absolute path in the Overleaf repo:
+
+```bash
+git config credential.helper /Applications/Xcode.app/Contents/Developer/usr/libexec/git-core/git-credential-osxkeychain
+```
+
+or, with Command Line Tools only:
+
+```bash
+git config credential.helper /Library/Developer/CommandLineTools/usr/libexec/git-core/git-credential-osxkeychain
+```
+
+Linux:
+
+Use a credential helper that works in non-interactive sessions. Common choices are `libsecret`, `cache`, or `store`.
+
+```bash
+git config credential.helper cache
+```
+
+`cache` keeps credentials in memory for a limited time; `store` writes them to disk in plain text and should only be used on trusted machines. Desktop Linux users can use `libsecret` when the helper is installed and the session can access the keyring.
+
+Windows:
+
+Use Git Credential Manager:
+
+```powershell
+git config --global credential.helper manager
+```
+
+For Codex running inside WSL, configure credentials inside WSL as well, or use the Linux instructions. Windows Git credentials do not automatically become available to WSL Git unless that bridge is configured.
+
+`tmux` availability:
+
+- macOS: install with Homebrew if needed, for example `brew install tmux`.
+- Linux: install from the system package manager, such as `apt install tmux` or `dnf install tmux`.
+- Windows: prefer WSL for `watch-supervisor`; native Windows shells usually do not include `tmux`.
+
+Without `tmux`, the core edit workflow still works: use `sync-before` before edits and `sync-after` after edits. Only `watch-supervisor` and `watch-health` need `tmux`.
+
 ## License
 
 MIT

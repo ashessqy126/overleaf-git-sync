@@ -76,6 +76,10 @@ For Codex automations or cron-style monitors, schedule `watch-health . --restart
 
 When creating or updating an automation for background syncing, write the automation prompt as a health monitor only. It must run `overleaf-git-sync watch-health . --restart-missing --interval 5 --max-age-seconds 300`, and it must not run `overleaf-git-sync status . --fetch`, `sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`. The supervised watcher is the only component that polls Overleaf; the automation only verifies and restarts that watcher.
 
+On other systems, verify non-interactive Git credentials before starting supervised watcher automation: `GIT_TERMINAL_PROMPT=0 git ls-remote --heads <remote>`. If it fails, configure the platform credential helper first: macOS uses `osxkeychain` or an absolute Xcode/CommandLineTools helper path for bundled Git, Linux may use `cache`, `store`, or `libsecret`, and Windows should use Git Credential Manager. Without `tmux`, do not use `watch-supervisor` or `watch-health`; the normal `sync-before`/`sync-after` workflow still works.
+
+For first-time Overleaf Git credentials, instruct the user to generate an Overleaf Git authentication token, use username `git`, paste the token as the password during one interactive Git command such as `git ls-remote --heads origin`, then verify unattended access with `GIT_TERMINAL_PROMPT=0`.
+
 When watch reports that a same-file remote update appears mergeable, run `reconcile` only after the user or task explicitly wants to apply it. `reconcile` may create conflict markers when the local and Overleaf changes touch the same position; if that happens, resolve those markers before any `sync-after`.
 
 `hook` is provided as a PreToolUse entrypoint for environments that support wiring Codex hooks. The skill remains the primary enforcement path inside Codex because hook coverage differs by platform and Codex version.
