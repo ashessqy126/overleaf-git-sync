@@ -1,0 +1,37 @@
+{
+  "name": "overleaf-git-sync",
+  "version": "0.1.0",
+  "description": "Safely synchronize Overleaf Git projects before and after AI edits.",
+  "author": {
+    "name": "ashessqy126",
+    "url": "https://github.com/ashessqy126"
+  },
+  "homepage": "https://github.com/ashessqy126/overleaf-git-sync",
+  "repository": "https://github.com/ashessqy126/overleaf-git-sync",
+  "license": "MIT",
+  "keywords": [
+    "overleaf",
+    "latex",
+    "git",
+    "claude-code",
+    "codex",
+    "agent-skill"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Overleaf Git Sync",
+    "shortDescription": "Pull, commit, and push Overleaf Git projects around AI edits.",
+    "longDescription": "Overleaf Git Sync gives Codex a guarded Git workflow for Overleaf projects: fast-forward pull before LaTeX edits, commit only selected files afterward, and push back to the Overleaf remote.",
+    "developerName": "ashessqy126",
+    "category": "Productivity",
+    "capabilities": [
+      "Write",
+      "Automation"
+    ],
+    "defaultPrompt": [
+      "Set up this Overleaf Git project for safe AI edits.",
+      "Sync this Overleaf paper before editing.",
+      "Commit and push my LaTeX edits to Overleaf."
+    ]
+  }
+}

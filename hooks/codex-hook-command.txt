@@ -1,0 +1,5 @@
+Use this command as a Codex PreToolUse hook body when your Codex version supports hooks for apply_patch/Bash:
+
+python3 <plugin-root>/scripts/overleaf_git_sync.py hook
+
+The hook is deliberately conservative. It only runs sync-before when it can identify a supported Overleaf text file path and that path belongs to an opted-in Overleaf Git repository.
