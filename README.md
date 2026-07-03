@@ -69,10 +69,18 @@ The watcher is deliberately pull-only:
 - it runs `sync-before` every interval;
 - it only fast-forwards from Overleaf;
 - it lets Git pull non-overlapping remote changes even when other local files are dirty;
-- it skips only when the remote update would overwrite local uncommitted changes;
+- when the same dirty file is also updated remotely, it performs a temporary dry-run merge and reports whether the update is line-mergeable or a same-position conflict;
 - it never commits or pushes automatically.
 
 Use this when you want Overleaf web edits to appear locally while you are mostly reading or waiting. If you want the older stricter behavior, pass `--require-clean` so the watcher skips whenever the worktree has local changes.
+
+If watch reports that a same-file update appears mergeable, apply it explicitly:
+
+```bash
+overleaf-git-sync reconcile .
+```
+
+`reconcile` stashes local changes, fast-forwards to Overleaf, then pops the stash. If Git detects a true same-position conflict, it leaves conflict markers in the affected files and reports line ranges such as `section1.tex:143-158`.
 
 ## Agent Workflow
 
@@ -130,6 +138,7 @@ overleaf-git-sync init [path] [--remote overleaf] [--branch master]
 overleaf-git-sync sync-before [path] [--force] [--allow-dirty]
 overleaf-git-sync sync-after [paths...] -m "message" [--no-push] [--all-latex]
 overleaf-git-sync watch [path] [--interval 5] [--require-clean]
+overleaf-git-sync reconcile [path]
 overleaf-git-sync status [path] [--fetch]
 overleaf-git-sync hook
 overleaf-git-sync hook-config

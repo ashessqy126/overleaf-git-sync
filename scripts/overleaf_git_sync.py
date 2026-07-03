@@ -8,9 +8,11 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Iterable
 
@@ -380,6 +382,142 @@ def sync_after(
     return f"committed {commit} without push: " + ", ".join(target_set)
 
 
+def local_tracked_patch(repo: pathlib.Path) -> bytes:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--binary", "HEAD", "--"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise SyncError(proc.stderr.decode("utf-8", "replace").strip() or "git diff failed")
+    return proc.stdout
+
+
+def commit_all_for_probe(repo: pathlib.Path) -> None:
+    env = os.environ.copy()
+    env.update({
+        "GIT_AUTHOR_NAME": "overleaf-git-sync",
+        "GIT_AUTHOR_EMAIL": "overleaf-git-sync@example.invalid",
+        "GIT_COMMITTER_NAME": "overleaf-git-sync",
+        "GIT_COMMITTER_EMAIL": "overleaf-git-sync@example.invalid",
+    })
+    git(repo, ["add", "-A"])
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "commit", "--no-gpg-sign", "-m", "overleaf-git-sync conflict probe"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        raise SyncError(f"conflict probe commit failed: {detail}")
+
+
+def conflict_marker_ranges(root: pathlib.Path, paths: Iterable[str]) -> list[tuple[str, int, int]]:
+    ranges: list[tuple[str, int, int]] = []
+    for raw in paths:
+        path = root / raw
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        start = None
+        for idx, line in enumerate(lines, start=1):
+            if line.startswith("<<<<<<< "):
+                start = idx
+            elif line.startswith(">>>>>>> ") and start is not None:
+                ranges.append((raw, start, idx))
+                start = None
+    return ranges
+
+
+def format_conflict_ranges(ranges: list[tuple[str, int, int]], *, limit: int = 8) -> str:
+    if not ranges:
+        return "same-position conflict detected, but no conflict markers were found"
+    items = [f"{path}:{start}-{end}" for path, start, end in ranges[:limit]]
+    extra = f" (+{len(ranges) - limit} more)" if len(ranges) > limit else ""
+    return "same-position conflict at " + ", ".join(items) + extra
+
+
+def dry_run_conflict_report(repo: pathlib.Path, fetched_ref: str = "FETCH_HEAD") -> tuple[str, str]:
+    """Return (status, detail) for applying local dirty changes over fetched_ref.
+
+    status is one of: clean, conflict, no-local-patch, inconclusive.
+    This uses a temporary linked worktree and never touches the user's real
+    working tree.
+    """
+    patch = local_tracked_patch(repo)
+    if not patch.strip():
+        return "no-local-patch", "no tracked local patch to test"
+    fetched = rev(repo, fetched_ref)
+    tmp_parent = pathlib.Path(tempfile.mkdtemp(prefix="overleaf-git-sync-"))
+    tmp = tmp_parent / "probe"
+    try:
+        git(repo, ["worktree", "add", "--detach", "--quiet", str(tmp), "HEAD"])
+        apply_proc = subprocess.run(
+            ["git", "-C", str(tmp), "apply", "--3way"],
+            input=patch,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if apply_proc.returncode != 0:
+            detail = apply_proc.stderr.decode("utf-8", "replace").strip()
+            return "inconclusive", detail or "could not replay local patch in probe worktree"
+        commit_all_for_probe(tmp)
+        merge_proc = subprocess.run(
+            ["git", "-C", str(tmp), "merge", "--no-commit", "--no-ff", fetched],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if merge_proc.returncode == 0:
+            return "clean", "same-file remote update appears mergeable"
+        conflicted = git(tmp, ["diff", "--name-only", "--diff-filter=U"], check=False).stdout.splitlines()
+        ranges = conflict_marker_ranges(tmp, conflicted)
+        return "conflict", format_conflict_ranges(ranges)
+    finally:
+        git(repo, ["worktree", "remove", "--force", str(tmp)], check=False)
+        shutil.rmtree(tmp_parent, ignore_errors=True)
+
+
+def reconcile(
+    path: str | pathlib.Path,
+    *,
+    remote_override: str | None = None,
+    branch_override: str | None = None,
+) -> str:
+    repo, remote, branch, _ = resolve_project(
+        path, remote_override=remote_override, branch_override=branch_override
+    )
+    git(repo, ["fetch", "--prune", remote, branch])
+    head = rev(repo, "HEAD")
+    fetched = rev(repo, "FETCH_HEAD")
+    if head == fetched:
+        return f"up to date: {repo} ({remote}/{branch})"
+    if not is_ancestor(repo, head, "FETCH_HEAD"):
+        raise SyncError(f"{repo} has diverged from {remote}/{branch}; resolve committed history first")
+
+    dirty = bool(dirty_entries(repo))
+    stashed = False
+    if dirty:
+        proc = git(repo, ["stash", "push", "-u", "-m", "overleaf-git-sync reconcile"], check=False)
+        if "No local changes to save" not in (proc.stdout + proc.stderr):
+            if proc.returncode != 0:
+                raise SyncError((proc.stderr or proc.stdout).strip() or "git stash failed")
+            stashed = True
+    git(repo, ["merge", "--ff-only", "FETCH_HEAD"])
+    if not stashed:
+        return f"fast-forwarded: {repo} to {remote}/{branch}"
+
+    pop = git(repo, ["stash", "pop"], check=False)
+    if pop.returncode == 0:
+        return f"reconciled: fast-forwarded {repo} and reapplied local changes cleanly"
+    conflicted = git(repo, ["diff", "--name-only", "--diff-filter=U"], check=False).stdout.splitlines()
+    ranges = conflict_marker_ranges(repo, conflicted)
+    raise SyncError(format_conflict_ranges(ranges) + "; resolve conflict markers, then continue")
+
+
 def write_marker(repo: pathlib.Path, remote: str, branch: str) -> None:
     payload = {
         "enabled": True,
@@ -435,6 +573,10 @@ def cmd_status(args: argparse.Namespace) -> None:
             print(f"  {item}")
     if args.fetch:
         print(sync_before(args.path, remote_override=remote, branch_override=branch, force=True))
+
+
+def cmd_reconcile(args: argparse.Namespace) -> None:
+    print(reconcile(args.path, remote_override=args.remote, branch_override=args.branch))
 
 
 def hook_paths(data: dict) -> list[str]:
@@ -541,11 +683,29 @@ def cmd_watch(args: argparse.Namespace) -> None:
                     flush=True,
                 )
             elif "would be overwritten" in text or "Please commit your changes" in text:
-                print(
-                    f"[{timestamp()}] skipped: remote update would overwrite local changes; "
-                    "commit/stash or run sync-after, then watch will resume",
-                    flush=True,
-                )
+                try:
+                    repo, _, _, _ = resolve_project(
+                        args.path,
+                        remote_override=args.remote,
+                        branch_override=args.branch,
+                    )
+                    status, detail = dry_run_conflict_report(repo)
+                    if status == "clean":
+                        print(
+                            f"[{timestamp()}] pending: same-file update appears mergeable; "
+                            f"run `overleaf-git-sync reconcile {args.path}` to apply it",
+                            flush=True,
+                        )
+                    elif status == "conflict":
+                        print(f"[{timestamp()}] pending: {detail}", flush=True)
+                    else:
+                        print(f"[{timestamp()}] pending: {detail}", flush=True)
+                except Exception as report_exc:
+                    print(
+                        f"[{timestamp()}] skipped: remote update would overwrite local changes; "
+                        f"conflict probe failed: {report_exc}",
+                        flush=True,
+                    )
             else:
                 print(f"[{timestamp()}] blocked: {exc}", flush=True)
                 if args.stop_on_error:
@@ -616,6 +776,12 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--fetch", action="store_true")
     status.set_defaults(func=cmd_status)
 
+    reconcile_parser = sub.add_parser("reconcile", help="explicitly merge Overleaf updates with local dirty changes")
+    reconcile_parser.add_argument("path", nargs="?", default=".")
+    reconcile_parser.add_argument("--remote")
+    reconcile_parser.add_argument("--branch")
+    reconcile_parser.set_defaults(func=cmd_reconcile)
+
     hook = sub.add_parser("hook", help="PreToolUse hook entrypoint; reads JSON on stdin")
     hook.add_argument("--force", action="store_true")
     hook.set_defaults(func=cmd_hook)
@@ -623,7 +789,7 @@ def build_parser() -> argparse.ArgumentParser:
     hook_config = sub.add_parser("hook-config", help="print the hook command to wire into Codex")
     hook_config.set_defaults(func=cmd_hook_config)
 
-    watch = sub.add_parser("watch", help="poll Overleaf and fast-forward while the worktree is clean")
+    watch = sub.add_parser("watch", help="poll Overleaf and fast-forward when safe")
     watch.add_argument("path", nargs="?", default=".")
     watch.add_argument("--remote")
     watch.add_argument("--branch")

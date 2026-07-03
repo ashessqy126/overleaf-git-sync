@@ -1,6 +1,6 @@
 {
   "name": "overleaf-git-sync",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Safely synchronize Overleaf Git projects before and after AI edits.",
   "author": {
     "name": "ashessqy126",
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Overleaf Git Sync",
     "shortDescription": "Pull, commit, and push Overleaf Git projects around AI edits.",
-    "longDescription": "Overleaf Git Sync gives Codex a guarded Git workflow for Overleaf projects: fast-forward pull before LaTeX edits, optional pull-only polling that permits non-overlapping dirty pulls, commit only selected files afterward, and push back to the Overleaf remote.",
+    "longDescription": "Overleaf Git Sync gives Codex a guarded Git workflow for Overleaf projects: fast-forward pull before LaTeX edits, optional pull-only polling with dry-run conflict detection, explicit reconcile for same-file edits, commit only selected files afterward, and push back to the Overleaf remote.",
     "developerName": "ashessqy126",
     "category": "Productivity",
     "capabilities": [
