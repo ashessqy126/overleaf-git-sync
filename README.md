@@ -22,7 +22,7 @@ You do not need this if you only edit locally, only edit in the Overleaf web edi
 Paste this into Claude Code or Codex:
 
 ```text
-Install Overleaf Git Sync from https://github.com/ashessqy126/overleaf-git-sync: clone it, run `python3 scripts/install.py --all`, then restart the agent and use the `overleaf-git-sync` skill before editing Overleaf Git projects.
+Install Overleaf Git Sync from https://github.com/ashessqy126/overleaf-git-sync: first confirm `python3` and `git` are available, and install `tmux` too if I want supervised background watcher or automation health checks; then clone the repo, run `python3 scripts/install.py --all`, restart the agent, and use the `overleaf-git-sync` skill before editing Overleaf Git projects.
 ```
 
 ## Manual Install
@@ -181,13 +181,23 @@ overleaf-git-sync hook [--lock-timeout 60]
 overleaf-git-sync hook-config
 ```
 
-## Requirements
+## Dependencies
+
+Core commands such as `init`, `sync-before`, `sync-after`, `watch`, `status`, and `reconcile` require:
 
 - Python 3.8+
 - Git
-- `tmux` for `watch-supervisor` and `watch-health`
 - Overleaf Git integration enabled for the project
 - Git credentials configured for `https://git.overleaf.com/<project_id>`
+
+Supervised background polling additionally requires:
+
+- `tmux` for `watch-supervisor` and `watch-health`
+
+Agent integrations are optional:
+
+- Claude Code, if you want the installed Claude skill and PreToolUse hook
+- Codex CLI, if you want the installer to register the local Codex plugin marketplace
 
 ## License
 
