@@ -90,6 +90,12 @@ Start lightweight current-thread polling:
 Use overleaf-git-sync: in this current Codex thread, check this Overleaf project every 5 minutes with a heartbeat. Each heartbeat should run one pull-only polling iteration with watch --once. Do not create a cron/workspace automation, do not start a persistent watcher, and do not run raw Git commands.
 ```
 
+Ambiguous monitor request:
+
+```text
+Use overleaf-git-sync: monitor this Overleaf repo with sync polling. Since I did not explicitly ask for a detached workspace job or cron, use a current-thread heartbeat and report status back in this chat.
+```
+
 Check or stop background syncing:
 
 ```text
@@ -169,6 +175,10 @@ overleaf-git-sync watch-health . --restart-missing --interval 5
 `watch-health` checks that the supervised watcher is alive and that the latest watcher status is healthy. With `--restart-missing`, it restarts the supervised watcher if the session is gone. It reports attention-needed states such as pending conflicts, diverged history, repeated lock skips, stale output, or current fetch errors. It does not run `sync-before` itself, so it avoids creating a second polling loop.
 
 When creating a Codex automation, choose heartbeat or cron based on the user's requested surface.
+Do not treat words like "poll", "monitor", "watch", or "sync polling" as permission to create a
+detached cron/workspace automation. If the user asks to monitor or poll an Overleaf repo and does
+not explicitly say the job should run outside the current conversation, default to a current-thread
+heartbeat and briefly say so.
 If the user asks for reminders, follow-ups, periodic status, or polling in the current chat, use a
 current-thread heartbeat (`kind=heartbeat`, `destination=thread`). Do not create a cron/workspace
 automation for that case.
@@ -184,8 +194,9 @@ For supervised watcher health, the heartbeat should run `watch-health . --restar
 `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`.
 
 Only use a cron/workspace automation if the user explicitly asks for a detached workspace job,
-cron job, or project-level monitor outside the current thread. If the wording is ambiguous between
-detached automation and current-thread polling, default to a heartbeat and briefly say so.
+cron job, standalone background job, or project-level monitor outside the current thread. If the
+wording is ambiguous between detached automation and current-thread polling, default to a heartbeat
+and briefly say so.
 
 For unattended watcher health checks, make sure Git can authenticate to `git.overleaf.com` without a terminal password prompt. A supervised watcher will not wait for interactive credentials.
 

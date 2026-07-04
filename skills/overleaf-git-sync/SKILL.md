@@ -75,6 +75,11 @@ For a long-running background watcher, prefer `watch-supervisor start` over a de
 
 ## Codex Automation Choice
 
+In the Codex app, do not treat words like "poll", "monitor", "watch", or "sync polling" as
+permission to create a detached cron/workspace automation. If the user asks to monitor or poll an
+Overleaf repo and does not explicitly say the job should run outside the current conversation,
+default to a current-thread heartbeat and briefly state that choice.
+
 If the user asks for scheduled reminders, current-thread follow-ups, periodic status updates, or
 lightweight polling from the current conversation, create or update a current-thread heartbeat
 (`kind=heartbeat`, `destination=thread`). Do not create a cron/workspace automation for this case.
@@ -92,10 +97,11 @@ should report only whether the repo is up to date, whether a fast-forward happen
 action is needed.
 
 Only create a cron/workspace automation when the user explicitly asks for a detached workspace job,
-cron job, or project-level monitor that should run outside the current thread. If the user says
-"in this thread", "remind me here", "come back to this chat", or otherwise implies conversational
-follow-up, use a heartbeat. If the wording is ambiguous between detached workspace automation and
-current-thread polling, default to a heartbeat and briefly state that choice.
+cron job, standalone background job, or project-level monitor that should run outside the current
+thread. If the user says "in this thread", "remind me here", "come back to this chat", or otherwise
+implies conversational follow-up, use a heartbeat. If the wording is ambiguous between detached
+workspace automation and current-thread polling, default to a heartbeat and briefly state that
+choice.
 
 For supervised background watchers, `watch-health . --restart-missing --interval 5` checks that
 the supervised watcher is alive, restarts it if it is missing, and reports attention-needed states
