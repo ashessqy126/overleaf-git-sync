@@ -62,6 +62,7 @@ Use `--no-push` only if the user explicitly wants a local commit without updatin
 overleaf-git-sync status .
 overleaf-git-sync status . --fetch
 overleaf-git-sync watch . --interval 5
+overleaf-git-sync watch . --interval 5 --once
 overleaf-git-sync watch-supervisor start . --interval 5
 overleaf-git-sync watch-health . --restart-missing --interval 5
 overleaf-git-sync reconcile .
@@ -72,15 +73,59 @@ Use `watch` only when the user explicitly asks for Dropbox-like polling. It is p
 
 For a long-running background watcher, prefer `watch-supervisor start` over a dedicated sync subagent. The supervisor uses `tmux` to keep the normal `watch` command running after the current agent turn. Supervised watchers disable interactive Git password prompts; if Overleaf Git credentials are not available non-interactively, report the authentication error and ask the user to configure credentials rather than waiting for input. Use `watch-supervisor status`, `watch-supervisor logs`, `watch-supervisor restart`, and `watch-supervisor stop` to inspect or manage it.
 
-For Codex automations or cron-style monitors, schedule `watch-health . --restart-missing --interval 5` every few minutes. `watch-health` checks that the supervised watcher is alive, restarts it if it is missing, and reports attention-needed states such as pending conflicts, diverged history, stale output, repeated lock skips, or current fetch errors. It does not run `sync-before` itself, so it should be treated as a watcher health check rather than a second synchronization loop.
+## Codex Automation Choice
 
-When the user asks to start background sync, guarded sync, auto-pull, polling, a background watcher, or a watcher guard for an Overleaf paper, perform the combined setup: start the supervised tmux-backed watcher with `watch-supervisor start . --interval 5`, then create a current-thread heartbeat (`kind=heartbeat`, `destination=thread`) that runs `watch-health . --restart-missing --interval 5 --max-age-seconds 300`. Do not treat "start background sync" as only starting the watcher, and do not create a detached cron/workspace automation unless the user explicitly asks for one.
+If the user asks for scheduled reminders, current-thread follow-ups, periodic status updates, or
+lightweight polling from the current conversation, create or update a current-thread heartbeat
+(`kind=heartbeat`, `destination=thread`). Do not create a cron/workspace automation for this case.
+
+For lightweight 5-minute sync polling in the current thread, make the heartbeat run one pull-only
+polling iteration:
+
+```bash
+overleaf-git-sync watch . --interval 5 --once
+```
+
+The heartbeat prompt must say not to start a long-running watcher, not to run `watch-health
+--restart-missing`, not to run `sync-before`/`sync-after`, and not to use raw Git commands. It
+should report only whether the repo is up to date, whether a fast-forward happened, or whether user
+action is needed.
+
+Only create a cron/workspace automation when the user explicitly asks for a detached workspace job,
+cron job, or project-level monitor that should run outside the current thread. If the user says
+"in this thread", "remind me here", "come back to this chat", or otherwise implies conversational
+follow-up, use a heartbeat. If the wording is ambiguous between detached workspace automation and
+current-thread polling, default to a heartbeat and briefly state that choice.
+
+For supervised background watchers, `watch-health . --restart-missing --interval 5` checks that
+the supervised watcher is alive, restarts it if it is missing, and reports attention-needed states
+such as pending conflicts, diverged history, stale output, repeated lock skips, or current fetch
+errors. It does not run `sync-before` itself, so it should be treated as a watcher health check
+rather than a second synchronization loop.
+
+When the user asks to start a persistent background watcher, guarded sync, auto-pull, Dropbox-like
+local polling, or a watcher guard for an Overleaf paper, perform the combined setup: start the
+supervised tmux-backed watcher with `watch-supervisor start . --interval 5`, then create a
+current-thread heartbeat (`kind=heartbeat`, `destination=thread`) that runs
+`watch-health . --restart-missing --interval 5 --max-age-seconds 300`. Do not treat "start
+background sync" as only starting the watcher, and do not create a detached cron/workspace
+automation unless the user explicitly asks for one.
 
 When the user asks to stop background sync, guarded sync, auto-pull, polling, a background watcher, or a watcher guard, stop both parts: stop the supervised tmux watcher with `watch-supervisor stop`, and delete the current-thread heartbeat for that watcher if one exists. Only operate on one part alone when the user explicitly says "only the heartbeat" or "only the tmux watcher".
 
-When creating a Codex automation for an Overleaf paper task or watcher health check, prefer a current-thread heartbeat (`kind=heartbeat`, `destination=thread`) so follow-up status appears in the same paper-editing thread. Do not create a cron/workspace automation that opens a fresh session every interval unless the user explicitly asks for a detached workspace monitor or long-term project job. For short intervals such as 5 minutes, use a heartbeat by default.
+When creating a Codex automation for an Overleaf paper task, lightweight polling loop, or watcher
+health check, prefer a current-thread heartbeat (`kind=heartbeat`, `destination=thread`) so
+follow-up status appears in the same paper-editing thread. Do not create a cron/workspace
+automation that opens a fresh session every interval unless the user explicitly asks for a
+detached workspace monitor or long-term project job. For short intervals such as 5 minutes, use a
+heartbeat by default.
 
-When creating or updating an automation for background syncing, write the automation prompt as a health monitor only. It must run `overleaf-git-sync watch-health . --restart-missing --interval 5 --max-age-seconds 300`, and it must not run `overleaf-git-sync status . --fetch`, `sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`. The supervised watcher is the only component that polls Overleaf; the automation only verifies and restarts that watcher.
+When creating or updating an automation for supervised background syncing, write the automation
+prompt as a health monitor only. It must run `overleaf-git-sync watch-health . --restart-missing
+--interval 5 --max-age-seconds 300`, and it must not run `overleaf-git-sync status . --fetch`,
+`sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git
+push`. The supervised watcher is the only component that polls Overleaf; the automation only
+verifies and restarts that watcher.
 
 Before starting supervised watcher automation, verify non-interactive Git credentials: `GIT_TERMINAL_PROMPT=0 git ls-remote --heads <remote>`. If it fails, configure the platform credential helper first: macOS uses `osxkeychain` or an absolute Xcode/CommandLineTools helper path for bundled Git, Linux may use `cache`, `store`, or `libsecret`, and Windows should use Git Credential Manager. Without `tmux`, do not use `watch-supervisor` or `watch-health`; the normal `sync-before`/`sync-after` workflow still works.
 

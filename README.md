@@ -84,6 +84,12 @@ Start background sync:
 Use overleaf-git-sync: start background sync for this Overleaf project. Start the supervised tmux-backed watcher with watch-supervisor at a 5 second interval, then create a current-thread Codex heartbeat that checks watcher health every 5 minutes with watch-health --restart-missing --interval 5 --max-age-seconds 300. Do not use a long-running subagent, and do not create a cron/workspace session.
 ```
 
+Start lightweight current-thread polling:
+
+```text
+Use overleaf-git-sync: in this current Codex thread, check this Overleaf project every 5 minutes with a heartbeat. Each heartbeat should run one pull-only polling iteration with watch --once. Do not create a cron/workspace automation, do not start a persistent watcher, and do not run raw Git commands.
+```
+
 Check or stop background syncing:
 
 ```text
@@ -154,7 +160,7 @@ overleaf-git-sync watch-supervisor restart . --interval 5
 overleaf-git-sync watch-supervisor stop .
 ```
 
-For Codex automations or cron-style monitors, run a health check every few minutes:
+For supervised watcher health, run a health check every few minutes:
 
 ```bash
 overleaf-git-sync watch-health . --restart-missing --interval 5
@@ -162,7 +168,24 @@ overleaf-git-sync watch-health . --restart-missing --interval 5
 
 `watch-health` checks that the supervised watcher is alive and that the latest watcher status is healthy. With `--restart-missing`, it restarts the supervised watcher if the session is gone. It reports attention-needed states such as pending conflicts, diverged history, repeated lock skips, stale output, or current fetch errors. It does not run `sync-before` itself, so it avoids creating a second polling loop.
 
-When creating an automation, make it a current-thread heartbeat and a health monitor only. The heartbeat should run `watch-health . --restart-missing --interval 5 --max-age-seconds 300`; it should not create a cron/workspace session, and it should not run `status . --fetch`, `sync-before`, raw `git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`.
+When creating a Codex automation, choose heartbeat or cron based on the user's requested surface.
+If the user asks for reminders, follow-ups, periodic status, or polling in the current chat, use a
+current-thread heartbeat (`kind=heartbeat`, `destination=thread`). Do not create a cron/workspace
+automation for that case.
+
+For lightweight current-thread polling, the heartbeat should run exactly one pull-only iteration:
+
+```bash
+overleaf-git-sync watch . --interval 5 --once
+```
+
+For supervised watcher health, the heartbeat should run `watch-health . --restart-missing
+--interval 5 --max-age-seconds 300`. It should not run `status . --fetch`, `sync-before`, raw
+`git fetch`, raw `git pull`, `git stash`, `git add`, `git commit`, or `git push`.
+
+Only use a cron/workspace automation if the user explicitly asks for a detached workspace job,
+cron job, or project-level monitor outside the current thread. If the wording is ambiguous between
+detached automation and current-thread polling, default to a heartbeat and briefly say so.
 
 For unattended watcher health checks, make sure Git can authenticate to `git.overleaf.com` without a terminal password prompt. A supervised watcher will not wait for interactive credentials.
 
